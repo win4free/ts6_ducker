@@ -12,7 +12,6 @@ public sealed class RemoteClient : IDisposable
     private readonly Action disconnected;
     private ClientWebSocket? socket;
     private volatile bool authenticated;
-    private long lastAuth;
     private int refresh;
     public string Status { get; private set; } = "Connecting to TeamSpeak…";
     public bool Connected => authenticated;
@@ -32,7 +31,6 @@ public sealed class RemoteClient : IDisposable
                 Status = $"Connecting to TS6 on localhost:{port}…";
                 await ws.ConnectAsync(new Uri($"ws://127.0.0.1:{port}"), connectTimeout.Token);
                 Status = "Waiting for approval in TeamSpeak notifications…";
-                lastAuth = Environment.TickCount64;
                 await SendAuth(ws);
                 using var cycle = CancellationTokenSource.CreateLinkedTokenSource(stop.Token);
                 var reader = Read(ws, cycle.Token);
@@ -45,7 +43,9 @@ public sealed class RemoteClient : IDisposable
                         long now = Environment.TickCount64;
                         if (settings().Port != port) break;
                         if (!authenticated && now - sentAt > 90_000) throw new IOException("TeamSpeak approval timed out; retrying.");
-                        if (authenticated && now - Interlocked.Read(ref lastAuth) > 25_000) throw new IOException("TeamSpeak stopped responding; restoring volumes.");
+                        // Auth snapshots are optional refresh responses, not heartbeat replies.
+                        // TS6 can deliver events without answering repeated auth requests.
+                        // A quiet channel is healthy: use WebSocket closure/errors for recovery.
                         if (authenticated && (now - sentAt > 15_000 || Interlocked.Exchange(ref refresh, 0) != 0))
                         { await SendAuth(ws); sentAt = now; }
                     }
@@ -65,7 +65,7 @@ public sealed class RemoteClient : IDisposable
     private async Task SendAuth(ClientWebSocket ws)
     {
         var json = System.Text.Json.JsonSerializer.Serialize(new {
-            type = "auth", payload = new { identifier = "local.ts6ducker", version = "0.4.0",
+            type = "auth", payload = new { identifier = "local.ts6ducker", version = "0.4.1",
                 name = "TS6 Ducker", description = "Lowers other Windows apps while you or your channel members talk.",
                 content = new { apiKey = Storage.ReadKey() } } });
         await ws.SendAsync(Encoding.UTF8.GetBytes(json), WebSocketMessageType.Text, true, stop.Token);
@@ -94,7 +94,7 @@ public sealed class RemoteClient : IDisposable
                     throw new IOException("TeamSpeak declined authentication. Review Remote Apps permissions.");
                 string? key = node["payload"]?["apiKey"]?.ToString();
                 if (!string.IsNullOrEmpty(key)) Storage.WriteKey(key);
-                authenticated = true; Interlocked.Exchange(ref lastAuth, Environment.TickCount64);
+                authenticated = true;
                 Status = "Connected to TeamSpeak";
             }
             message(node);

@@ -68,6 +68,7 @@ internal static class SelfTests
         Check("Crash recovery preserves later manual changes", () => { var x = new Session("g","Game",.6f); var e = new VolumeEntry("g","test-device","g","Game",.8f,.2f,.2f); var v = new VolumeController(new Backend(x),_=>{},[e]); v.Tick(false,s,0,true); Near(x.Volume,.6f); });
         Check("Unavailable audio devices retain recovery information", () => { var e = new VolumeEntry("g","test-device","g","Game",.8f,.2f,.2f); var v = new VolumeController(new Backend(),_=>{},[e]); v.Tick(false,s,0,true); Assert(v.ChangedSessions==1); });
         Check("Real WebSocket authentication, fragmented events, and disconnect", () => TransportTest().GetAwaiter().GetResult());
+        Check("Healthy WebSocket survives 32 seconds without repeated auth responses", () => TransportTest(true).GetAwaiter().GetResult());
         Check("Lifecycle stops only after TS has run and three absent checks", () => { var l = new TeamSpeakLifecycle(); Assert(!l.ShouldStop(true,false)); Assert(!l.ShouldStop(true,true)); Assert(!l.ShouldStop(true,false)); Assert(!l.ShouldStop(true,false)); Assert(l.ShouldStop(true,false)); });
         Check("Brief TS process restart does not close Ducker", () => { var l = new TeamSpeakLifecycle(); l.ShouldStop(true,true); l.ShouldStop(true,false); Assert(!l.ShouldStop(true,true)); Assert(!l.ShouldStop(true,false)); });
         Check("Disabling start/stop clears lifetime tracking", () => { var l = new TeamSpeakLifecycle(); l.ShouldStop(true,true); l.ShouldStop(false,false); for(int i=0;i<5;i++) Assert(!l.ShouldStop(true,false)); });
@@ -77,9 +78,9 @@ internal static class SelfTests
         results.Add($"\n{results.Count(x => x.StartsWith("PASS"))} passed; {results.Count(x => x.StartsWith("FAIL"))} failed.");
         File.WriteAllLines(output,results); Environment.ExitCode = results.Any(x=>x.StartsWith("FAIL")) ? 1 : 0;
     }
-    private static async Task TransportTest()
+    private static async Task TransportTest(bool longLived = false)
     {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(longLived ? 50 : 12));
         var token = timeout.Token;
         var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
         listener.Start();
@@ -115,9 +116,33 @@ internal static class SelfTests
             await server.SendAsync(System.Text.Encoding.UTF8.GetBytes("""{"type":"talkStatusChanged","payload":{"connectionId":1,"clientId":10,"status":1}}"""),System.Net.WebSockets.WebSocketMessageType.Text,true,token);
             for (int i=0;i<100 && messages.Count<2;i++) await Task.Delay(20,token);
             if (!remote.Connected || !messages.SequenceEqual(new[]{"auth","talkStatusChanged"})) throw new Exception("Fragmented events were not delivered.");
+            Task<System.Net.WebSockets.WebSocketReceiveResult>? pending = null;
+            if (longLived)
+            {
+                // Match TS6 builds that ignore repeated auth requests. Drain protocol frames,
+                // but send no auth replies or speech events during the idle interval.
+                var incomingBuffer = new byte[4096];
+                pending = server.ReceiveAsync(new ArraySegment<byte>(incomingBuffer), token);
+                long until = Environment.TickCount64 + 32_000;
+                while (Environment.TickCount64 < until)
+                {
+                    await Task.Delay(100, token);
+                    if (disconnected.Task.IsCompleted || !remote.Connected) throw new Exception("Healthy connection was disconnected by an application timeout.");
+                    if (pending.IsCompleted)
+                    {
+                        var ignored = await pending;
+                        if (ignored.MessageType == System.Net.WebSockets.WebSocketMessageType.Close) throw new Exception("Client closed a healthy connection.");
+                        pending = server.ReceiveAsync(new ArraySegment<byte>(incomingBuffer), token);
+                    }
+                }
+                await server.SendAsync(System.Text.Encoding.UTF8.GetBytes("""{"type":"talkStatusChanged","payload":{"connectionId":1,"clientId":10,"status":0}}"""),System.Net.WebSockets.WebSocketMessageType.Text,true,token);
+                for (int i=0;i<100 && messages.Count<3;i++) await Task.Delay(20,token);
+                if (messages.Count != 3) throw new Exception("Speech events stopped after the idle period.");
+            }
             await server.CloseOutputAsync(System.Net.WebSockets.WebSocketCloseStatus.NormalClosure,"test done",token);
             await disconnected.Task.WaitAsync(token);
             if (remote.Connected) throw new Exception("Remote stayed connected after close.");
+            if (pending != null) { server.Abort(); try { await pending; } catch (System.Net.WebSockets.WebSocketException) { } catch (OperationCanceledException) { } }
         }
         finally { remote.Dispose(); listener.Stop(); await run.WaitAsync(TimeSpan.FromSeconds(3)); }
     }

@@ -137,7 +137,7 @@ public sealed class MainForm : Form
         var v = engine.View;
         status.Text = v.Connection + "\n" + v.Activity + (v.Error == null ? "" : "\n" + v.Error);
         status.ForeColor = v.Error != null ? Color.Firebrick : SystemColors.ControlText;
-        details.Text = $"Servers: {v.Servers}    Speaking: {v.Speakers}    Sessions changed: {v.ChangedSessions}\nSpeech starts seen — you: {v.SelfStarts}, others: {v.OtherStarts}\nTeamSpeak is always excluded. Closing this window keeps the app in the tray.";
+        details.Text = $"Servers: {v.Servers}    Speaking: {v.Speakers}    Sessions changed: {v.ChangedSessions}\nTeamSpeak is always excluded. Closing this window keeps the app in the tray.";
         string text = "Audio apps detected:\r\n" + string.Join("\r\n", v.Apps.Select(x => x + (VolumeController.Excluded(x, engine.Settings) ? " (excluded)" : "")));
         if (apps.Text != text) apps.Text = text;
         tray.Text = "TS6 Ducker — " + (engine.Settings.Enabled ? "enabled" : "paused");

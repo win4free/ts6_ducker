@@ -6,7 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>TS6Ducker</AssemblyName>
-    <Version>0.4.0</Version>
+    <Version>0.4.1</Version>
     <Authors>Philip Weisel</Authors>
     <Company>Philip Weisel</Company>
     <Product>TS6 Ducker</Product>
