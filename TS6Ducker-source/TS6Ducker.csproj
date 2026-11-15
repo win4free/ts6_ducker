@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>TS6Ducker</AssemblyName>
+    <Version>0.4.0</Version>
+    <Authors>Philip Weisel</Authors>
+    <Company>Philip Weisel</Company>
+    <Product>TS6 Ducker</Product>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <Description>Audio ducking for TeamSpeak 6 by Philip Weisel</Description>
+    <ApplicationIcon>Assets\ducker.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Update="LICENSE" CopyToPublishDirectory="PreserveNewest" />
+    <EmbeddedResource Include="Assets\*.ico" />
+    <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,34 @@
+PASS Incoming speech and local speech both trigger
+PASS Overlapping speakers do not release early
+PASS Separate self and other switches
+PASS Speech while microphone disabled does not trigger
+PASS Other channels are excluded, optional whispers included
+PASS Moving channels clears speaking state
+PASS A leaving speaker cannot leave ducking stuck
+PASS Disconnect clears speech
+PASS Snapshot repairs stale speech
+PASS Invalid authentication cannot trigger ducking
+PASS Muted other client is excluded
+PASS IDs are scoped to connection
+PASS Preserve independent mixer levels and exclude TeamSpeak
+PASS Ducking never compounds
+PASS New audio sessions are ducked during speech
+PASS Fade restores original volume progressively
+PASS Speech resumes during fade without losing original
+PASS Manual mixer adjustment is respected
+PASS Custom exclusions restore a ducked session
+PASS Zero percent and 100 percent work
+PASS Journal failure prevents volume changes
+PASS Crash recovery restores only matching session instances
+PASS Crash inside mixer write is recoverable
+PASS Crash recovery preserves later manual changes
+PASS Unavailable audio devices retain recovery information
+PASS Real WebSocket authentication, fragmented events, and disconnect
+PASS Lifecycle stops only after TS has run and three absent checks
+PASS Brief TS process restart does not close Ducker
+PASS Disabling start/stop clears lifetime tracking
+PASS Watcher launches once per TS run and re-arms after exit
+PASS Old settings keep automatic startup opt-in
+PASS All tray status icons are embedded and load
+
+32 passed; 0 failed.
