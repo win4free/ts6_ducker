@@ -51,14 +51,32 @@ public sealed class TalkState
             return;
         }
         int connectionId = Int(p["connectionId"], -1);
-        if (!connections.TryGetValue(connectionId, out var c)) return;
         if (type == "connectStatusChanged")
         {
+            int status = Int(p["status"]);
+            // Ducker often authenticates before TS6 has joined any server. A later
+            // successful server connection must be registered without a new auth reply.
+            if (Ready && connectionId >= 0 && status == 4)
+            {
+                var info = p["info"];
+                var connected = new Connection { Self = Int(info?["clientId"]) };
+                foreach (var user in info?["clientInfos"]?.AsArray() ?? new JsonArray())
+                {
+                    if (user == null) continue;
+                    var props = user["properties"];
+                    connected.Clients[Int(user["id"])] = new Client { Channel = user["channelId"]?.ToString() ?? "",
+                        Talking = Bool(props?["flagTalking"]), Muted = Bool(props?["isMuted"]) };
+                }
+                connections[connectionId] = connected;
+                return;
+            }
+            if (!connections.TryGetValue(connectionId, out var previous)) return;
             // Any connection transition invalidates cached speaking flags.
-            foreach (var u in c.Clients.Values) u.Talking = false;
-            if (Int(p["status"]) == 0) connections.Remove(connectionId);
+            foreach (var u in previous.Clients.Values) u.Talking = false;
+            if (status == 0) connections.Remove(connectionId);
             return;
         }
+        if (!connections.TryGetValue(connectionId, out var c)) return;
         int clientId = Int(p["clientId"]);
         if (type == "clientMoved")
         {
@@ -68,6 +86,7 @@ public sealed class TalkState
             {
                 if (!c.Clients.TryGetValue(clientId, out var user)) c.Clients[clientId] = user = new Client();
                 user.Channel = channel; user.Talking = false;
+                if (p["properties"]?["isMuted"] != null) user.Muted = Bool(p["properties"]?["isMuted"]);
             }
             if (clientId == c.Self) foreach (var u in c.Clients.Values) u.Talking = false;
         }

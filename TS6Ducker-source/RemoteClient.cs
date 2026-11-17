@@ -65,7 +65,7 @@ public sealed class RemoteClient : IDisposable
     private async Task SendAuth(ClientWebSocket ws)
     {
         var json = System.Text.Json.JsonSerializer.Serialize(new {
-            type = "auth", payload = new { identifier = "local.ts6ducker", version = "0.4.1",
+            type = "auth", payload = new { identifier = "local.ts6ducker", version = "0.4.2",
                 name = "TS6 Ducker", description = "Lowers other Windows apps while you or your channel members talk.",
                 content = new { apiKey = Storage.ReadKey() } } });
         await ws.SendAsync(Encoding.UTF8.GetBytes(json), WebSocketMessageType.Text, true, stop.Token);

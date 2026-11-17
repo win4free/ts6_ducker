@@ -1,3 +1,5 @@
+<img src="TS6Ducker-source/Assets/toocando_icon.svg" width="96" alt="TooCanDo toucan icon">
+
 # TS6 Ducker
 
 **Automatically lower other apps while someone speaks in TeamSpeak 6.**
@@ -10,8 +12,8 @@ This is an independent project and is not affiliated with TeamSpeak.
 
 ## Download and install
 
-1. Open this repository's **Releases** section.
-2. Download **`TS6Ducker-0.4.0-Setup.exe`** from the release's **Assets** list.
+1. Open the [latest release](https://github.com/win4free/ts6_ducker/releases/latest).
+2. Download **`TS6Ducker-0.4.2-Setup.exe`** from the release's **Assets** list.
 3. Run the installer, then launch **TS6 Ducker** from the Start menu.
 
 The installer adds an entry to Windows Installed apps and offers an optional desktop shortcut. It installs for your Windows user without requiring administrator rights. The .NET runtime is included.
@@ -27,7 +29,7 @@ The current installer is unsigned.
 1. In TeamSpeak 6, open **Settings → Remote Apps** and enable the interface.
 2. Check that the port matches the one in Ducker. The default is **5899**.
 3. Approve **TS6 Ducker** in TeamSpeak's permission requests or notifications.
-4. Join a voice channel. Ducker should show **Connected to TeamSpeak** and update its speech counters when people talk.
+4. Join a voice channel. Ducker should show **Connected to TeamSpeak** and update the live speaking count.
 
 Each person approves their own connection. Release downloads contain no personal settings or authorization keys.
 
@@ -84,6 +86,7 @@ To uninstall, use **Windows Settings → Apps → Installed apps** (or **Apps & 
 The source is in this repository. Building requires Windows and the **.NET 8 SDK**.
 
 ```bat
+cd TS6Ducker-source
 BUILD.cmd
 ```
 

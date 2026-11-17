@@ -49,6 +49,18 @@ internal static class SelfTests
         Check("Invalid authentication cannot trigger ducking", () => { var t = Ready(); Talk(t, 10, 1); t.Apply(Node("""{"type":"auth","status":{"code":1},"payload":{}}""")); Assert(!t.Ready && t.Speakers(s) == 0); });
         Check("Muted other client is excluded", () => { var t = Ready(); Talk(t, 11, 1); t.Apply(Node("""{"type":"clientPropertiesUpdated","payload":{"connectionId":1,"clientId":11,"properties":{"isMuted":true}}}""")); Assert(t.Speakers(s) == 0); });
         Check("IDs are scoped to connection", () => { var t = Ready(); t.Apply(Node("""{"type":"talkStatusChanged","payload":{"connectionId":99,"clientId":11,"status":1}}""")); Assert(t.Speakers(s) == 0); });
+        TalkState JoinedAfterAuth()
+        {
+            var t = new TalkState();
+            t.Apply(Node("""{"type":"auth","status":{"code":0},"payload":{"connections":[]}}"""));
+            t.Apply(Node("""{"type":"connectStatusChanged","payload":{"connectionId":1,"status":4,"info":{"clientId":10}}}"""));
+            t.Apply(Node("""{"type":"clientMoved","payload":{"connectionId":1,"clientId":10,"newChannelId":5,"oldChannelId":0}}"""));
+            t.Apply(Node("""{"type":"clientMoved","payload":{"connectionId":1,"clientId":11,"newChannelId":5,"oldChannelId":0}}"""));
+            return t;
+        }
+        Check("Server joined after empty initial auth detects self and others", () => { var t=JoinedAfterAuth(); Talk(t,10,1); Talk(t,11,1); Assert(t.ConnectionCount==1 && t.Speakers(s)==2); });
+        Check("Leaving a server removes it and clears active speech", () => { var t=JoinedAfterAuth(); Talk(t,10,1); t.Apply(Node("""{"type":"connectStatusChanged","payload":{"connectionId":1,"status":0}}""")); Assert(t.ConnectionCount==0 && t.Speakers(s)==0); });
+        Check("Rejoining a server does not need another WebSocket auth", () => { var t=JoinedAfterAuth(); t.Apply(Node("""{"type":"connectStatusChanged","payload":{"connectionId":1,"status":0}}""")); t.Apply(Node("""{"type":"connectStatusChanged","payload":{"connectionId":1,"status":4,"info":{"clientId":20}}}""")); t.Apply(Node("""{"type":"clientMoved","payload":{"connectionId":1,"clientId":20,"newChannelId":6}}""")); Talk(t,20,1); Assert(t.ConnectionCount==1 && t.Speakers(s)==1); });
         Check("Preserve independent mixer levels and exclude TeamSpeak", () => {
             var game = new Session("g", "Game", .8f); var music = new Session("m", "Music", .4f); var ts = new Session("t", "TeamSpeak", .9f);
             var v = new VolumeController(new Backend(game, music, ts), _ => {});

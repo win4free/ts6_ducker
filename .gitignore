@@ -1,0 +1,11 @@
+bin/
+obj/
+publish/
+installer-output/
+.vs/
+*.user
+*.pdb
+auth.dat
+settings.json
+recovery-*.json*
+app.log*
