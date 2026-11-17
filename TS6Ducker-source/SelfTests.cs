@@ -129,6 +129,31 @@ internal static class SelfTests
         Check("Unavailable audio devices retain recovery information", () => { var e = new VolumeEntry("g","test-device","g","Game",.8f,.2f,.2f); var v = new VolumeController(new Backend(),_=>{},[e]); v.Tick(false,s,0,true); Assert(v.ChangedSessions==1); });
         Check("Real WebSocket authentication, fragmented events, and disconnect", () => TransportTest().GetAwaiter().GetResult());
         Check("Server join over WebSocket ducks audio without reconnecting", () => TransportTest(joinAfterAuth: true).GetAwaiter().GetResult());
+        Check("Server joins refresh the socket and recover missing clients without looping", () => JoinRefreshTransportTest().GetAwaiter().GetResult());
+        Check("Snapshot servers and replayed joins do not schedule refresh", () => {
+            var r = new ServerJoinRefresh();
+            r.Observe(Node("""{"type":"auth","payload":{"connections":[{"id":1,"clientId":10}]}}"""),0);
+            r.Observe(Node("""{"type":"connectStatusChanged","payload":{"connectionId":1,"status":4,"info":{"clientId":10}}}"""),10);
+            Assert(!r.TakeDue(5000));
+        });
+        Check("Duplicate join notifications schedule only one refresh", () => {
+            var r = new ServerJoinRefresh();
+            var join=Node("""{"type":"connectStatusChanged","payload":{"connectionId":1,"status":4,"info":{"clientId":10}}}""");
+            r.Observe(join,100); r.Observe(join,800);
+            Assert(!r.TakeDue(849) && r.TakeDue(850) && !r.TakeDue(5000));
+        });
+        Check("A server leaving before refresh cancels it", () => {
+            var r = new ServerJoinRefresh();
+            r.Observe(Node("""{"type":"connectStatusChanged","payload":{"connectionId":1,"status":4,"info":{"clientId":10}}}"""),0);
+            r.Observe(Node("""{"type":"connectStatusChanged","payload":{"connectionId":1,"status":0}}"""),100);
+            Assert(!r.TakeDue(5000));
+        });
+        Check("Client moves and speech never schedule a socket refresh", () => {
+            var r = new ServerJoinRefresh();
+            r.Observe(Node("""{"type":"clientMoved","payload":{"connectionId":1,"clientId":10,"newChannelId":5}}"""),0);
+            r.Observe(Node("""{"type":"talkStatusChanged","payload":{"connectionId":1,"clientId":10,"status":1}}"""),10);
+            Assert(!r.TakeDue(5000));
+        });
         Check("Healthy WebSocket survives 32 seconds without repeated auth responses", () => TransportTest(true).GetAwaiter().GetResult());
         Check("Lifecycle stops only after TS has run and three absent checks", () => { var l = new TeamSpeakLifecycle(); Assert(!l.ShouldStop(true,false)); Assert(!l.ShouldStop(true,true)); Assert(!l.ShouldStop(true,false)); Assert(!l.ShouldStop(true,false)); Assert(l.ShouldStop(true,false)); });
         Check("Brief TS process restart does not close Ducker", () => { var l = new TeamSpeakLifecycle(); l.ShouldStop(true,true); l.ShouldStop(true,false); Assert(!l.ShouldStop(true,true)); Assert(!l.ShouldStop(true,false)); });
@@ -156,25 +181,9 @@ internal static class SelfTests
         var run = remote.Run();
         try
         {
-            using var tcp = await listener.AcceptTcpClientAsync(token);
-            var stream = tcp.GetStream();
-            var bytes = new List<byte>(); var one = new byte[1];
-            while (true)
-            {
-                if (await stream.ReadAsync(one, token) == 0) throw new IOException("Handshake closed.");
-                bytes.Add(one[0]);
-                if (bytes.Count > 8192) throw new IOException("Handshake too large.");
-                if (bytes.Count >= 4 && System.Text.Encoding.ASCII.GetString(bytes.TakeLast(4).ToArray()) == "\r\n\r\n") break;
-            }
-            string header = System.Text.Encoding.ASCII.GetString(bytes.ToArray());
-            string key = header.Split("\r\n").First(x => x.StartsWith("Sec-WebSocket-Key:", StringComparison.OrdinalIgnoreCase)).Split(':',2)[1].Trim();
-            string accept = Convert.ToBase64String(System.Security.Cryptography.SHA1.HashData(System.Text.Encoding.ASCII.GetBytes(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")));
-            await stream.WriteAsync(System.Text.Encoding.ASCII.GetBytes($"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"), token);
-            using var server = System.Net.WebSockets.WebSocket.CreateFromStream(stream, true, null, TimeSpan.FromSeconds(5));
-            var buffer = new byte[4096];
-            var request = await server.ReceiveAsync(new ArraySegment<byte>(buffer),token);
-            var auth = JsonNode.Parse(buffer.AsSpan(0,request.Count))!;
-            if (auth["type"]?.ToString() != "auth" || auth["payload"]?["identifier"]?.ToString() != "local.ts6ducker") throw new Exception("Invalid auth request");
+            var peer = await AcceptRemote(listener, token);
+            using var tcp = peer.Tcp;
+            using var server = peer.Socket;
             byte[] response = System.Text.Encoding.UTF8.GetBytes("""{"type":"auth","status":{"code":0},"payload":{"connections":[]}}""");
             await server.SendAsync(response.AsMemory(0,20),System.Net.WebSockets.WebSocketMessageType.Text,false,token);
             await server.SendAsync(response.AsMemory(20),System.Net.WebSockets.WebSocketMessageType.Text,true,token);
@@ -247,5 +256,109 @@ internal static class SelfTests
             if (pending != null) { server.Abort(); try { await pending; } catch (System.Net.WebSockets.WebSocketException) { } catch (OperationCanceledException) { } }
         }
         finally { remote.Dispose(); listener.Stop(); await run.WaitAsync(TimeSpan.FromSeconds(3)); }
+    }
+    private static async Task<(System.Net.Sockets.TcpClient Tcp, System.Net.WebSockets.WebSocket Socket)> AcceptRemote(
+        System.Net.Sockets.TcpListener listener, CancellationToken token)
+    {
+        var tcp = await listener.AcceptTcpClientAsync(token);
+        try
+        {
+            var stream = tcp.GetStream();
+            var bytes = new List<byte>(); var one = new byte[1];
+            while (true)
+            {
+                if (await stream.ReadAsync(one, token) == 0) throw new IOException("Handshake closed.");
+                bytes.Add(one[0]);
+                if (bytes.Count > 8192) throw new IOException("Handshake too large.");
+                if (bytes.Count >= 4 && System.Text.Encoding.ASCII.GetString(bytes.TakeLast(4).ToArray()) == "\r\n\r\n") break;
+            }
+            string header = System.Text.Encoding.ASCII.GetString(bytes.ToArray());
+            string key = header.Split("\r\n").First(x => x.StartsWith("Sec-WebSocket-Key:", StringComparison.OrdinalIgnoreCase)).Split(':',2)[1].Trim();
+            string accept = Convert.ToBase64String(System.Security.Cryptography.SHA1.HashData(System.Text.Encoding.ASCII.GetBytes(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")));
+            await stream.WriteAsync(System.Text.Encoding.ASCII.GetBytes($"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"), token);
+            var socket = System.Net.WebSockets.WebSocket.CreateFromStream(stream, true, null, TimeSpan.FromSeconds(5));
+            var buffer = new byte[4096];
+            var request = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), token);
+            var auth = JsonNode.Parse(buffer.AsSpan(0,request.Count))!;
+            if (auth["type"]?.ToString() != "auth" || auth["payload"]?["identifier"]?.ToString() != "local.ts6ducker")
+            { socket.Dispose(); throw new Exception("Invalid auth request"); }
+            return (tcp, socket);
+        }
+        catch { tcp.Dispose(); throw; }
+    }
+    private static async Task JoinRefreshTransportTest()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var token = timeout.Token;
+        var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        int port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+        var state = new TalkState();
+        int snapshots = 0, disconnects = 0;
+        using var remote = new RemoteClient(() => new Settings(Port:port), n => {
+            lock (state) state.Apply(n);
+            if (n["type"]?.ToString() == "auth") Interlocked.Increment(ref snapshots);
+        }, () => { lock (state) state.Reset(); Interlocked.Increment(ref disconnects); });
+        var run = remote.Run();
+        System.Net.Sockets.TcpClient? tcp = null;
+        System.Net.WebSockets.WebSocket? server = null;
+        async Task Send(object node) => await server!.SendAsync(System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(node),
+            System.Net.WebSockets.WebSocketMessageType.Text,true,token);
+        async Task Until(Func<bool> condition) { while (!condition()) await Task.Delay(20,token); }
+        bool Speakers(int count) { lock (state) return state.Speakers(new Settings()) == count; }
+        try
+        {
+            (tcp, server) = await AcceptRemote(listener, token);
+            await Send(new { type="auth", status=new { code=0 }, payload=new { connections=Array.Empty<object>() } });
+            await Until(() => remote.Connected && Volatile.Read(ref snapshots)==1);
+            for (int join=0;join<2;join++)
+            {
+                int self=10+join*10;
+                // Reproduce the failure: server connected, but TS provides no client
+                // membership details until a fresh Remote Apps socket authenticates.
+                var connected = new { type="connectStatusChanged", payload=new { connectionId=1,status=4,info=new { clientId=self } } };
+                await Send(connected);
+                var buffer = new byte[4096];
+                try
+                {
+                    var received=await server!.ReceiveAsync(new ArraySegment<byte>(buffer),token);
+                    if (received.MessageType != System.Net.WebSockets.WebSocketMessageType.Close)
+                        throw new Exception("Missing membership was not recovered with a new socket.");
+                }
+                catch (System.Net.WebSockets.WebSocketException) { }
+                server!.Dispose(); tcp!.Dispose();
+                (tcp, server)=await AcceptRemote(listener,token);
+                await Send(new { type="auth",status=new { code=0 },payload=new { connections=new[] {
+                    new { id=1,clientId=self,clientInfos=new[] {
+                        new { id=self,channelId=5,properties=new { flagTalking=false } },
+                        new { id=self+1,channelId=5,properties=new { flagTalking=false } }
+                    } }
+                } } });
+                await Until(() => remote.Connected && Volatile.Read(ref snapshots)==join+2);
+                // TS may repeat status 4 after auth. It must not cause a third socket.
+                await Send(connected);
+                await Task.Delay(1400,token);
+                if (!remote.Connected || Volatile.Read(ref disconnects)!=join+1 || listener.Pending())
+                    throw new Exception("Snapshot replay caused a reconnect loop.");
+                await Send(new { type="talkStatusChanged",payload=new { connectionId=1,clientId=self,status=1 } });
+                await Send(new { type="talkStatusChanged",payload=new { connectionId=1,clientId=self+1,status=1 } });
+                await Until(() => Speakers(2));
+                var game=new Session("game","Game",.8f);
+                var volume=new VolumeController(new Backend(game),_=>{});
+                volume.Tick(true,new Settings(),0);
+                if (Math.Abs(game.Volume-.2f)>.001f) throw new Exception("Recovered speech did not duck audio.");
+                await Send(new { type="talkStatusChanged",payload=new { connectionId=1,clientId=self,status=0 } });
+                await Send(new { type="talkStatusChanged",payload=new { connectionId=1,clientId=self+1,status=0 } });
+                await Until(() => Speakers(0));
+                volume.Tick(false,new Settings(),100,true);
+                if (Math.Abs(game.Volume-.8f)>.001f) throw new Exception("Recovered speech did not restore audio.");
+                if (join==0) await Send(new { type="connectStatusChanged",payload=new { connectionId=1,status=0 } });
+            }
+        }
+        finally
+        {
+            remote.Dispose(); server?.Dispose(); tcp?.Dispose(); listener.Stop();
+            await run.WaitAsync(TimeSpan.FromSeconds(3));
+        }
     }
 }

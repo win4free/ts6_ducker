@@ -12,7 +12,6 @@ public sealed class RemoteClient : IDisposable
     private readonly Action disconnected;
     private ClientWebSocket? socket;
     private volatile bool authenticated;
-    private int refresh;
     public string Status { get; private set; } = "Connecting to TeamSpeak…";
     public bool Connected => authenticated;
     public RemoteClient(Func<Settings> settings, Action<JsonNode> message, Action disconnected)
@@ -21,6 +20,7 @@ public sealed class RemoteClient : IDisposable
     {
         while (!stop.IsCancellationRequested)
         {
+            bool refreshAfterJoin = false;
             try
             {
                 int port = settings().Port;
@@ -33,7 +33,8 @@ public sealed class RemoteClient : IDisposable
                 Status = "Waiting for approval in TeamSpeak notifications…";
                 await SendAuth(ws);
                 using var cycle = CancellationTokenSource.CreateLinkedTokenSource(stop.Token);
-                var reader = Read(ws, cycle.Token);
+                var joinRefresh = new ServerJoinRefresh();
+                var reader = Read(ws, joinRefresh, cycle.Token);
                 long sentAt = Environment.TickCount64;
                 try
                 {
@@ -43,14 +44,25 @@ public sealed class RemoteClient : IDisposable
                         long now = Environment.TickCount64;
                         if (settings().Port != port) break;
                         if (!authenticated && now - sentAt > 90_000) throw new IOException("TeamSpeak approval timed out; retrying.");
-                        // Auth snapshots are optional refresh responses, not heartbeat replies.
-                        // TS6 can deliver events without answering repeated auth requests.
-                        // A quiet channel is healthy: use WebSocket closure/errors for recovery.
-                        if (authenticated && (now - sentAt > 15_000 || Interlocked.Exchange(ref refresh, 0) != 0))
-                        { await SendAuth(ws); sentAt = now; }
+                        // Some TS builds ignore repeated auth requests and omit client
+                        // details on a later server join. A new socket obtains a fresh
+                        // authoritative snapshot, just like the manual Reconnect button.
+                        if (authenticated && joinRefresh.TakeDue(now))
+                        {
+                            refreshAfterJoin = true;
+                            Status = "Refreshing TeamSpeak server state…";
+                            Storage.Log("Refreshing Remote Apps connection after server join.");
+                            break;
+                        }
                     }
                 }
-                finally { cycle.Cancel(); ws.Abort(); try { await reader; } catch (OperationCanceledException) { } }
+                finally
+                {
+                    cycle.Cancel(); ws.Abort();
+                    try { await reader; }
+                    catch (OperationCanceledException) { }
+                    catch (WebSocketException) when (refreshAfterJoin) { }
+                }
             }
             catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
             catch (Exception ex)
@@ -59,18 +71,18 @@ public sealed class RemoteClient : IDisposable
                 Storage.Log("Remote connection: " + ex.GetType().Name + ": " + ex.Message);
             }
             finally { authenticated = false; disconnected(); socket = null; }
-            try { await Task.Delay(2500, stop.Token); } catch (OperationCanceledException) { }
+            try { await Task.Delay(refreshAfterJoin ? 150 : 2500, stop.Token); } catch (OperationCanceledException) { }
         }
     });
     private async Task SendAuth(ClientWebSocket ws)
     {
         var json = System.Text.Json.JsonSerializer.Serialize(new {
-            type = "auth", payload = new { identifier = "local.ts6ducker", version = "0.4.3",
+            type = "auth", payload = new { identifier = "local.ts6ducker", version = "0.4.4",
                 name = "TS6 Ducker", description = "Lowers other Windows apps while you or your channel members talk.",
                 content = new { apiKey = Storage.ReadKey() } } });
         await ws.SendAsync(Encoding.UTF8.GetBytes(json), WebSocketMessageType.Text, true, stop.Token);
     }
-    private async Task Read(ClientWebSocket ws, CancellationToken token)
+    private async Task Read(ClientWebSocket ws, ServerJoinRefresh joinRefresh, CancellationToken token)
     {
         byte[] buffer = new byte[8192];
         while (!token.IsCancellationRequested)
@@ -96,11 +108,65 @@ public sealed class RemoteClient : IDisposable
                 if (!string.IsNullOrEmpty(key)) Storage.WriteKey(key);
                 authenticated = true;
                 Status = "Connected to TeamSpeak";
+                var connections = node["payload"]?["connections"] as JsonArray;
+                int clientCount = connections?.Sum(c => (c?["clientInfos"] as JsonArray)?.Count ?? 0) ?? 0;
+                Storage.Log($"Remote snapshot: servers={connections?.Count ?? 0}, clients={clientCount}.");
             }
+            joinRefresh.Observe(node, Environment.TickCount64);
             message(node);
-            if (type is "clientMoved" or "connectStatusChanged") Interlocked.Exchange(ref refresh, 1);
         }
     }
     public void Reconnect() { try { socket?.Abort(); } catch { } }
     public void Dispose() { stop.Cancel(); Reconnect(); }
+}
+
+// Tracks joins relative to each socket's initial snapshot. Replayed connected
+// events for servers already in that snapshot must not cause a reconnect loop.
+internal sealed class ServerJoinRefresh
+{
+    private readonly object gate = new();
+    private readonly Dictionary<int, int> known = new();
+    private readonly HashSet<int> pending = new();
+    private long due;
+    public void Observe(JsonNode message, long now)
+    {
+        lock (gate)
+        {
+            var p = message["payload"];
+            if (p == null) return;
+            string? type = message["type"]?.ToString();
+            if (type == "auth")
+            {
+                known.Clear(); pending.Clear(); due = 0;
+                foreach (var c in p["connections"]?.AsArray() ?? new JsonArray())
+                    if (c != null && TalkState.Int(c["clientId"]) > 0)
+                        known[TalkState.Int(c["id"], -1)] = TalkState.Int(c["clientId"]);
+                return;
+            }
+            if (type != "connectStatusChanged") return;
+            int id = TalkState.Int(p["connectionId"], -1), status = TalkState.Int(p["status"], -1);
+            if (id < 0) return;
+            if (status is >= 0 and <= 3)
+            {
+                known.Remove(id); pending.Remove(id);
+                if (pending.Count == 0) due = 0;
+            }
+            else if (status == 4)
+            {
+                int self = TalkState.Int(p["info"]?["clientId"]);
+                if (known.TryGetValue(id, out int previous) && (self == 0 || self == previous)) return;
+                known[id] = self; pending.Add(id);
+                if (due == 0) due = now + 750;
+            }
+        }
+    }
+    public bool TakeDue(long now)
+    {
+        lock (gate)
+        {
+            if (due == 0 || now < due || pending.Count == 0) return false;
+            due = 0; pending.Clear();
+            return true;
+        }
+    }
 }

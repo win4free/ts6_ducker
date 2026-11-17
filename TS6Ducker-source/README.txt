@@ -11,7 +11,7 @@ This is an independent project and is not affiliated with TeamSpeak.
 ## Download and install
 
 1. Open this repository's **Releases** section.
-2. Download **`TS6Ducker-0.4.3-Setup.exe`** from the release's **Assets** list.
+2. Download **`TS6Ducker-0.4.4-Setup.exe`** from the release's **Assets** list.
 3. Run the installer, then launch **TS6 Ducker** from the Start menu.
 
 The installer adds an entry to Windows Installed apps and offers an optional desktop shortcut. It installs for your Windows user without requiring administrator rights. The .NET runtime is included.

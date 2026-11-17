@@ -35,6 +35,11 @@ PASS Crash recovery preserves later manual changes
 PASS Unavailable audio devices retain recovery information
 PASS Real WebSocket authentication, fragmented events, and disconnect
 PASS Server join over WebSocket ducks audio without reconnecting
+PASS Server joins refresh the socket and recover missing clients without looping
+PASS Snapshot servers and replayed joins do not schedule refresh
+PASS Duplicate join notifications schedule only one refresh
+PASS A server leaving before refresh cancels it
+PASS Client moves and speech never schedule a socket refresh
 PASS Healthy WebSocket survives 32 seconds without repeated auth responses
 PASS Lifecycle stops only after TS has run and three absent checks
 PASS Brief TS process restart does not close Ducker
@@ -43,4 +48,4 @@ PASS Watcher launches once per TS run and re-arms after exit
 PASS Old settings keep automatic startup opt-in
 PASS All tray status icons are embedded and load
 
-44 passed; 0 failed.
+49 passed; 0 failed.

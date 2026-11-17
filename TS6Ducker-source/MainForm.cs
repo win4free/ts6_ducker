@@ -26,7 +26,7 @@ public sealed class MainForm : Form
     private static NumericUpDown Number(int min, int max, int value) => new() { Minimum = min, Maximum = max, Value = value, Width = 100 };
     public MainForm(bool automatic = false)
     {
-        Text = "TS6 Ducker"; Icon = normalIcon;
+        Text = $"TS6 Ducker {typeof(MainForm).Assembly.GetName().Version?.ToString(3)}"; Icon = normalIcon;
         ClientSize = new Size(640, 820); MinimumSize = new Size(600, 790);
         Font = new Font("Segoe UI", 10); StartPosition = FormStartPosition.CenterScreen;
         var settings = Storage.LoadSettings();
