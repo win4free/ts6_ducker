@@ -61,6 +61,54 @@ internal static class SelfTests
         Check("Server joined after empty initial auth detects self and others", () => { var t=JoinedAfterAuth(); Talk(t,10,1); Talk(t,11,1); Assert(t.ConnectionCount==1 && t.Speakers(s)==2); });
         Check("Leaving a server removes it and clears active speech", () => { var t=JoinedAfterAuth(); Talk(t,10,1); t.Apply(Node("""{"type":"connectStatusChanged","payload":{"connectionId":1,"status":0}}""")); Assert(t.ConnectionCount==0 && t.Speakers(s)==0); });
         Check("Rejoining a server does not need another WebSocket auth", () => { var t=JoinedAfterAuth(); t.Apply(Node("""{"type":"connectStatusChanged","payload":{"connectionId":1,"status":0}}""")); t.Apply(Node("""{"type":"connectStatusChanged","payload":{"connectionId":1,"status":4,"info":{"clientId":20}}}""")); t.Apply(Node("""{"type":"clientMoved","payload":{"connectionId":1,"clientId":20,"newChannelId":6}}""")); Talk(t,20,1); Assert(t.ConnectionCount==1 && t.Speakers(s)==1); });
+        Check("Clients arriving before connected status are retained", () => {
+            var t = new TalkState();
+            t.Apply(Node("""{"type":"auth","status":{"code":0},"payload":{"connections":[]}}"""));
+            t.Apply(Node("""{"type":"clientMoved","payload":{"connectionId":1,"clientId":10,"newChannelId":5,"oldChannelId":0}}"""));
+            t.Apply(Node("""{"type":"clientMoved","payload":{"connectionId":1,"clientId":11,"newChannelId":5,"oldChannelId":0}}"""));
+            t.Apply(Node("""{"type":"connectStatusChanged","payload":{"connectionId":1,"status":4,"info":{"clientId":10}}}"""));
+            Talk(t,10,1); Talk(t,11,1);
+            Assert(t.ConnectionCount==1 && t.Speakers(s)==2);
+        });
+        Check("Connection progress preserves clients and early speech", () => {
+            var t = new TalkState();
+            t.Apply(Node("""{"type":"auth","status":{"code":0},"payload":{"connections":[]}}"""));
+            foreach (int status in new[]{1,2,3}) t.Apply(Node(System.Text.Json.JsonSerializer.Serialize(new { type="connectStatusChanged", payload=new { connectionId=1, status } })));
+            t.Apply(Node("""{"type":"clientMoved","payload":{"connectionId":1,"clientId":10,"newChannelId":5}}"""));
+            t.Apply(Node("""{"type":"clientMoved","payload":{"connectionId":1,"clientId":11,"newChannelId":5}}"""));
+            Talk(t,11,1);
+            Assert(t.Speakers(s)==0);
+            t.Apply(Node("""{"type":"connectStatusChanged","payload":{"connectionId":1,"status":4,"info":{"clientId":10}}}"""));
+            Assert(t.Speakers(s)==1);
+        });
+        Check("Repeated connected notification does not erase membership or speech", () => {
+            var t=JoinedAfterAuth(); Talk(t,11,1);
+            t.Apply(Node("""{"type":"connectStatusChanged","payload":{"connectionId":1,"status":4,"info":{"clientId":10}}}"""));
+            Assert(t.Speakers(s)==1);
+        });
+        Check("Speech received before a client's move is retained", () => {
+            var t=JoinedAfterAuth(); Talk(t,12,1);
+            t.Apply(Node("""{"type":"clientMoved","payload":{"connectionId":1,"clientId":12,"newChannelId":5,"oldChannelId":0}}"""));
+            Assert(t.Speakers(s)==1);
+        });
+        Check("Reused connection ID drops the previous server's clients", () => {
+            var t=JoinedAfterAuth(); Talk(t,11,1);
+            t.Apply(Node("""{"type":"connectStatusChanged","payload":{"connectionId":1,"status":1}}"""));
+            t.Apply(Node("""{"type":"clientMoved","payload":{"connectionId":1,"clientId":20,"newChannelId":5}}"""));
+            t.Apply(Node("""{"type":"connectStatusChanged","payload":{"connectionId":1,"status":4,"info":{"clientId":20}}}"""));
+            Talk(t,11,1); Assert(t.Speakers(s)==0);
+            Talk(t,20,1); Assert(t.Speakers(s)==1);
+        });
+        Check("Late self speech after leaving cannot restart ducking", () => {
+            var t=JoinedAfterAuth();
+            t.Apply(Node("""{"type":"clientMoved","payload":{"connectionId":1,"clientId":10,"newChannelId":0}}"""));
+            Talk(t,10,1); Assert(t.Speakers(s)==0);
+        });
+        Check("Late whisper after a client leaves waits for membership", () => {
+            var t=JoinedAfterAuth();
+            t.Apply(Node("""{"type":"clientMoved","payload":{"connectionId":1,"clientId":11,"newChannelId":0}}"""));
+            Talk(t,11,1,true); Assert(t.Speakers(s)==0);
+        });
         Check("Preserve independent mixer levels and exclude TeamSpeak", () => {
             var game = new Session("g", "Game", .8f); var music = new Session("m", "Music", .4f); var ts = new Session("t", "TeamSpeak", .9f);
             var v = new VolumeController(new Backend(game, music, ts), _ => {});
@@ -80,6 +128,7 @@ internal static class SelfTests
         Check("Crash recovery preserves later manual changes", () => { var x = new Session("g","Game",.6f); var e = new VolumeEntry("g","test-device","g","Game",.8f,.2f,.2f); var v = new VolumeController(new Backend(x),_=>{},[e]); v.Tick(false,s,0,true); Near(x.Volume,.6f); });
         Check("Unavailable audio devices retain recovery information", () => { var e = new VolumeEntry("g","test-device","g","Game",.8f,.2f,.2f); var v = new VolumeController(new Backend(),_=>{},[e]); v.Tick(false,s,0,true); Assert(v.ChangedSessions==1); });
         Check("Real WebSocket authentication, fragmented events, and disconnect", () => TransportTest().GetAwaiter().GetResult());
+        Check("Server join over WebSocket ducks audio without reconnecting", () => TransportTest(joinAfterAuth: true).GetAwaiter().GetResult());
         Check("Healthy WebSocket survives 32 seconds without repeated auth responses", () => TransportTest(true).GetAwaiter().GetResult());
         Check("Lifecycle stops only after TS has run and three absent checks", () => { var l = new TeamSpeakLifecycle(); Assert(!l.ShouldStop(true,false)); Assert(!l.ShouldStop(true,true)); Assert(!l.ShouldStop(true,false)); Assert(!l.ShouldStop(true,false)); Assert(l.ShouldStop(true,false)); });
         Check("Brief TS process restart does not close Ducker", () => { var l = new TeamSpeakLifecycle(); l.ShouldStop(true,true); l.ShouldStop(true,false); Assert(!l.ShouldStop(true,true)); Assert(!l.ShouldStop(true,false)); });
@@ -90,7 +139,7 @@ internal static class SelfTests
         results.Add($"\n{results.Count(x => x.StartsWith("PASS"))} passed; {results.Count(x => x.StartsWith("FAIL"))} failed.");
         File.WriteAllLines(output,results); Environment.ExitCode = results.Any(x=>x.StartsWith("FAIL")) ? 1 : 0;
     }
-    private static async Task TransportTest(bool longLived = false)
+    private static async Task TransportTest(bool longLived = false, bool joinAfterAuth = false)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(longLived ? 50 : 12));
         var token = timeout.Token;
@@ -98,8 +147,12 @@ internal static class SelfTests
         listener.Start();
         int port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
         var messages = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        var state = new TalkState();
         var disconnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var remote = new RemoteClient(() => new Settings(Port: port), n => messages.Enqueue(n["type"]!.ToString()), () => disconnected.TrySetResult());
+        using var remote = new RemoteClient(() => new Settings(Port: port), n => {
+            lock (state) state.Apply(n);
+            messages.Enqueue(n["type"]!.ToString());
+        }, () => disconnected.TrySetResult());
         var run = remote.Run();
         try
         {
@@ -125,9 +178,46 @@ internal static class SelfTests
             byte[] response = System.Text.Encoding.UTF8.GetBytes("""{"type":"auth","status":{"code":0},"payload":{"connections":[]}}""");
             await server.SendAsync(response.AsMemory(0,20),System.Net.WebSockets.WebSocketMessageType.Text,false,token);
             await server.SendAsync(response.AsMemory(20),System.Net.WebSockets.WebSocketMessageType.Text,true,token);
+            var expected = new List<string> { "auth" };
+            if (joinAfterAuth)
+            {
+                foreach (string json in new[] {
+                    """{"type":"connectStatusChanged","payload":{"connectionId":1,"status":1}}""",
+                    """{"type":"clientMoved","payload":{"connectionId":1,"clientId":10,"newChannelId":5,"oldChannelId":0}}""",
+                    """{"type":"connectStatusChanged","payload":{"connectionId":1,"status":2}}""",
+                    """{"type":"clientMoved","payload":{"connectionId":1,"clientId":11,"newChannelId":5,"oldChannelId":0}}""",
+                    """{"type":"talkStatusChanged","payload":{"connectionId":1,"clientId":11,"status":1}}""",
+                    """{"type":"connectStatusChanged","payload":{"connectionId":1,"status":3}}""",
+                    """{"type":"connectStatusChanged","payload":{"connectionId":1,"status":4,"info":{"clientId":10}}}"""
+                })
+                {
+                    expected.Add(JsonNode.Parse(json)!["type"]!.ToString());
+                    await server.SendAsync(System.Text.Encoding.UTF8.GetBytes(json),System.Net.WebSockets.WebSocketMessageType.Text,true,token);
+                }
+            }
             await server.SendAsync(System.Text.Encoding.UTF8.GetBytes("""{"type":"talkStatusChanged","payload":{"connectionId":1,"clientId":10,"status":1}}"""),System.Net.WebSockets.WebSocketMessageType.Text,true,token);
-            for (int i=0;i<100 && messages.Count<2;i++) await Task.Delay(20,token);
-            if (!remote.Connected || !messages.SequenceEqual(new[]{"auth","talkStatusChanged"})) throw new Exception("Fragmented events were not delivered.");
+            expected.Add("talkStatusChanged");
+            for (int i=0;i<100 && messages.Count<expected.Count;i++) await Task.Delay(20,token);
+            if (!remote.Connected || !messages.SequenceEqual(expected)) throw new Exception("Fragmented events were not delivered.");
+            if (joinAfterAuth)
+            {
+                var game = new Session("game", "Game", .8f);
+                var volume = new VolumeController(new Backend(game), _ => {});
+                lock (state)
+                {
+                    if (state.ConnectionCount != 1 || state.Speakers(new Settings()) != 2) throw new Exception("Server join lost clients or speech.");
+                    volume.Tick(state.Speakers(new Settings()) > 0, new Settings(), 0);
+                }
+                if (Math.Abs(game.Volume - .2f) > .001f) throw new Exception("Speech did not duck audio.");
+                await server.SendAsync(System.Text.Encoding.UTF8.GetBytes("""{"type":"connectStatusChanged","payload":{"connectionId":1,"status":0}}"""),System.Net.WebSockets.WebSocketMessageType.Text,true,token);
+                for (int i=0;i<100 && messages.Count<expected.Count+1;i++) await Task.Delay(20,token);
+                lock (state)
+                {
+                    if (state.ConnectionCount != 0 || state.Speakers(new Settings()) != 0) throw new Exception("Server disconnect retained speech.");
+                    volume.Tick(false, new Settings(), 100, true);
+                }
+                if (Math.Abs(game.Volume - .8f) > .001f) throw new Exception("Server disconnect did not restore audio.");
+            }
             Task<System.Net.WebSockets.WebSocketReceiveResult>? pending = null;
             if (longLived)
             {

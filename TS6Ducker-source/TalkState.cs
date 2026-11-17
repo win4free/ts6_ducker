@@ -8,6 +8,7 @@ public sealed class TalkState
     private sealed class Connection
     {
         public int Self;
+        public bool Connected;
         public Dictionary<int, Client> Clients = new();
     }
     private sealed class Client
@@ -17,7 +18,7 @@ public sealed class TalkState
     }
     private readonly Dictionary<int, Connection> connections = new();
     public bool Ready { get; private set; }
-    public int ConnectionCount => connections.Count;
+    public int ConnectionCount => connections.Values.Count(c => c.Connected);
     public int SelfStarts { get; private set; }
     public int OtherStarts { get; private set; }
     public void Reset() { connections.Clear(); Ready = false; }
@@ -37,7 +38,7 @@ public sealed class TalkState
             {
                 if (item == null) continue;
                 int cid = Int(item["id"]);
-                var conn = new Connection { Self = Int(item["clientId"]) };
+                var conn = new Connection { Self = Int(item["clientId"]), Connected = true };
                 foreach (var user in item["clientInfos"]?.AsArray() ?? new JsonArray())
                 {
                     if (user == null) continue;
@@ -54,30 +55,47 @@ public sealed class TalkState
         if (type == "connectStatusChanged")
         {
             int status = Int(p["status"]);
-            // Ducker often authenticates before TS6 has joined any server. A later
-            // successful server connection must be registered without a new auth reply.
-            if (Ready && connectionId >= 0 && status == 4)
+            if (!Ready || connectionId < 0) return;
+            if (status == 0) { connections.Remove(connectionId); return; }
+            if (status is >= 1 and <= 3)
+            {
+                // A reused handler starts a new server session. Keep any clients
+                // already received for this pending connection through later stages.
+                if (!connections.TryGetValue(connectionId, out var pending) || pending.Connected)
+                    connections[connectionId] = new Connection();
+                return;
+            }
+            if (status == 4)
             {
                 var info = p["info"];
-                var connected = new Connection { Self = Int(info?["clientId"]) };
+                // TS sends membership in separate events, which can precede this
+                // notification. Completing a connection must not erase those clients.
+                if (!connections.TryGetValue(connectionId, out var connected))
+                    connections[connectionId] = connected = new Connection();
+                if (info?["clientId"] != null) connected.Self = Int(info["clientId"]);
+                connected.Connected = true;
                 foreach (var user in info?["clientInfos"]?.AsArray() ?? new JsonArray())
                 {
                     if (user == null) continue;
                     var props = user["properties"];
-                    connected.Clients[Int(user["id"])] = new Client { Channel = user["channelId"]?.ToString() ?? "",
-                        Talking = Bool(props?["flagTalking"]), Muted = Bool(props?["isMuted"]) };
+                    int id = Int(user["id"]);
+                    if (!connected.Clients.TryGetValue(id, out var client))
+                        connected.Clients[id] = client = new Client();
+                    if (user["channelId"] != null) client.Channel = user["channelId"]!.ToString();
+                    if (props?["flagTalking"] != null) client.Talking = Bool(props["flagTalking"]);
+                    if (props?["isMuted"] != null) client.Muted = Bool(props["isMuted"]);
                 }
-                connections[connectionId] = connected;
-                return;
             }
-            if (!connections.TryGetValue(connectionId, out var previous)) return;
-            // Any connection transition invalidates cached speaking flags.
-            foreach (var u in previous.Clients.Values) u.Talking = false;
-            if (status == 0) connections.Remove(connectionId);
             return;
         }
-        if (!connections.TryGetValue(connectionId, out var c)) return;
+        if (!Ready || connectionId < 0) return;
         int clientId = Int(p["clientId"]);
+        if (clientId <= 0) return;
+        if (!connections.TryGetValue(connectionId, out var c))
+        {
+            if (type != "clientMoved" || string.IsNullOrEmpty(p["newChannelId"]?.ToString()) || p["newChannelId"]!.ToString() == "0") return;
+            connections[connectionId] = c = new Connection();
+        }
         if (type == "clientMoved")
         {
             string channel = p["newChannelId"]?.ToString() ?? "";
@@ -85,13 +103,19 @@ public sealed class TalkState
             else
             {
                 if (!c.Clients.TryGetValue(clientId, out var user)) c.Clients[clientId] = user = new Client();
-                user.Channel = channel; user.Talking = false;
+                bool changedChannel = user.Channel.Length > 0 && user.Channel != channel;
+                user.Channel = channel;
+                if (changedChannel) user.Talking = false;
                 if (p["properties"]?["isMuted"] != null) user.Muted = Bool(p["properties"]?["isMuted"]);
+                if (clientId == c.Self && changedChannel)
+                    foreach (var u in c.Clients.Values) u.Talking = false;
             }
-            if (clientId == c.Self) foreach (var u in c.Clients.Values) u.Talking = false;
+            if (clientId == c.Self && (channel == "0" || channel.Length == 0))
+                foreach (var u in c.Clients.Values) u.Talking = false;
         }
-        else if (c.Clients.TryGetValue(clientId, out var user))
+        else if (type is "talkStatusChanged" or "clientPropertiesUpdated")
         {
+            if (!c.Clients.TryGetValue(clientId, out var user)) c.Clients[clientId] = user = new Client();
             if (type == "talkStatusChanged")
             {
                 bool talking = Int(p["status"]) == 1; // 2 = speech while transmission is disabled.
@@ -113,12 +137,13 @@ public sealed class TalkState
         int count = 0;
         foreach (var conn in connections.Values)
         {
-            if (!conn.Clients.TryGetValue(conn.Self, out var self)) continue;
+            if (!conn.Connected) continue;
+            if (!conn.Clients.TryGetValue(conn.Self, out var self) || self.Channel.Length == 0) continue;
             foreach (var (id, u) in conn.Clients)
             {
                 if (!u.Talking) continue;
                 if (id == conn.Self) { if (settings.OnSelf) count++; }
-                else if (settings.OnOthers && !u.Muted &&
+                else if (settings.OnOthers && !u.Muted && u.Channel.Length > 0 &&
                     ((u.Whisper && settings.IncludeWhispers) || (!u.Whisper && self.Channel.Length > 0 && u.Channel == self.Channel))) count++;
             }
         }

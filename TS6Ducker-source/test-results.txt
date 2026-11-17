@@ -13,6 +13,13 @@ PASS IDs are scoped to connection
 PASS Server joined after empty initial auth detects self and others
 PASS Leaving a server removes it and clears active speech
 PASS Rejoining a server does not need another WebSocket auth
+PASS Clients arriving before connected status are retained
+PASS Connection progress preserves clients and early speech
+PASS Repeated connected notification does not erase membership or speech
+PASS Speech received before a client's move is retained
+PASS Reused connection ID drops the previous server's clients
+PASS Late self speech after leaving cannot restart ducking
+PASS Late whisper after a client leaves waits for membership
 PASS Preserve independent mixer levels and exclude TeamSpeak
 PASS Ducking never compounds
 PASS New audio sessions are ducked during speech
@@ -27,6 +34,7 @@ PASS Crash inside mixer write is recoverable
 PASS Crash recovery preserves later manual changes
 PASS Unavailable audio devices retain recovery information
 PASS Real WebSocket authentication, fragmented events, and disconnect
+PASS Server join over WebSocket ducks audio without reconnecting
 PASS Healthy WebSocket survives 32 seconds without repeated auth responses
 PASS Lifecycle stops only after TS has run and three absent checks
 PASS Brief TS process restart does not close Ducker
@@ -35,4 +43,4 @@ PASS Watcher launches once per TS run and re-arms after exit
 PASS Old settings keep automatic startup opt-in
 PASS All tray status icons are embedded and load
 
-36 passed; 0 failed.
+44 passed; 0 failed.
